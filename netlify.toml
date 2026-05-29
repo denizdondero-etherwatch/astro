@@ -1,0 +1,14 @@
+# Netlify configuration for EtherWatch
+[build]
+  functions = "netlify/functions"
+
+# Scheduled function to collect data daily at 6 AM UTC
+[[plugins]]
+  package = "@netlify/plugin-scheduled-functions"
+
+[functions]
+  # Data collection runs daily
+  schedule = "0 6 * * *"
+  
+[build.environment]
+  NODE_VERSION = "18"
