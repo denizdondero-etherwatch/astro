@@ -635,12 +635,38 @@
         ];
 
         // Planetary aspects (updated for May 2026)
-        const planetaryAspects = [
+        // Fallback aspects in case function fails
+        let planetaryAspects = [
             { date: 'May 12, 2026', aspect: 'Square □', planets: 'Mars ♂ - Pluto ♇', degree: '90°', energy: 'Power, transformation, intense action', color: '#dc2626', icon: '□' },
             { date: 'May 9, 2026', aspect: 'Trine △', planets: 'Venus ♀ - Neptune ♆', degree: '120°', energy: 'Compassion, romance, spiritual love', color: '#a855f7', icon: '△' },
             { date: 'May 6, 2026', aspect: 'Conjunction ☌', planets: 'Mercury ☿ - Jupiter ♃', degree: '0°', energy: 'Wisdom, optimism, big ideas', color: '#22c55e', icon: '☌' },
             { date: 'May 3, 2026', aspect: 'Opposition ☍', planets: 'Sun ☉ - Saturn ♄', degree: '180°', energy: 'Responsibility, structure, limitations', color: '#f59e0b', icon: '☍' }
         ];
+        
+        // Fetch live planetary aspects from Netlify function
+        async function fetchPlanetaryAspects() {
+            try {
+                console.log('Fetching live planetary aspects from Netlify function...');
+                const response = await fetch('/.netlify/functions/planetary-aspects-live');
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.success && data.aspects && data.aspects.length > 0) {
+                    planetaryAspects = data.aspects;
+                    console.log('✓ Live planetary aspects loaded:', planetaryAspects.length, 'aspects');
+                    displayPlanetaryAspects();
+                } else {
+                    console.log('No aspects in response, using fallback');
+                }
+            } catch (error) {
+                console.warn('Unable to fetch live planetary aspects, using fallback:', error);
+                // Use fallback data (already set above)
+            }
+        }
 
         function displayEarthquakes() {
             const container = document.getElementById('earthquakeList');
@@ -825,12 +851,12 @@
             await Promise.all([
                 fetchEarthquakes(),
                 fetchSolarFlareData(),
-                fetchKpIndex()
+                fetchKpIndex(),
+                fetchPlanetaryAspects()
             ]);
             
             // Display static data
             displayVolcanoes();
-            displayPlanetaryAspects();
             updateSchumannData();
             
             // Update chart
@@ -851,6 +877,9 @@
         
         // Auto-refresh Kp index every 60 seconds
         setInterval(fetchKpIndex, 60 * 1000);
+        
+        // Auto-refresh planetary aspects every 6 hours
+        setInterval(fetchPlanetaryAspects, 6 * 60 * 60 * 1000);
         
         // Update Schumann visualization every 30 seconds
         setInterval(updateSchumannData, 30000);
