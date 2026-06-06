@@ -321,6 +321,7 @@
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const data = await response.json();
 
+                // Use the long-channel (0.1-0.8nm) reading used for flare classification
                 const longChannel = data.filter(d => !d.energy || d.energy === '0.1-0.8nm');
                 const latest = longChannel[longChannel.length - 1];
                 const flux = parseFloat(latest.flux);
@@ -512,4 +513,253 @@
                 return `
                     <div class="bg-white border border-gray-200 rounded-lg p-4 hover:border-purple-400 hover:shadow-sm transition-all">
                         <div class="flex items-start gap-3 mb-3">
-                            <div c
+                            <div class="aspect-icon" style="background: ${aspect.color}20; color: ${aspect.color}; border: 2px solid ${aspect.color};">
+                                ${aspect.icon}
+                            </div>
+                            <div class="flex-1">
+                                <div class="text-sm font-bold text-gray-800 mb-1">${aspect.aspect}</div>
+                                <div class="text-xs text-gray-500">${aspect.date}</div>
+                            </div>
+                        </div>
+                        <div class="text-sm text-gray-800 font-medium mb-2">${aspect.planets}</div>
+                        <div class="text-xs text-gray-600 mb-1">Angle: ${aspect.degree}</div>
+                        <div class="text-xs text-gray-600 italic">${aspect.energy}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // ---------- REAL MULTI-STREAM TIMELINE ----------
+        // Convert GOES X-ray flux to a flare class label (for tooltips)
+        function fluxToClass(flux) {
+            if (flux == null || flux <= 0) return 'n/a';
+            let c, n;
+            if (flux >= 1e-3)      { c = 'X'; n = flux / 1e-3; }
+            else if (flux >= 1e-4) { c = 'M'; n = flux / 1e-4; }
+            else if (flux >= 1e-5) { c = 'C'; n = flux / 1e-5; }
+            else if (flux >= 1e-6) { c = 'B'; n = flux / 1e-6; }
+            else                   { c = 'A'; n = flux / 1e-7; }
+            return c + n.toFixed(1);
+        }
+
+        async function buildTimelineData(days) {
+            const now = new Date();
+            const dayKeys = [];
+            const dayLabels = [];
+            for (let i = days - 1; i >= 0; i--) {
+                const d = new Date(now);
+                d.setDate(d.getDate() - i);
+                dayKeys.push(d.toISOString().slice(0, 10));
+                dayLabels.push(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+            }
+
+            const kpByDay = {}, fluxByDay = {}, quakeByDay = {};
+
+            // Geomagnetic Kp (3-hour observed) - daily max
+            try {
+                const r = await fetch('https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json');
+                const data = await r.json();
+                data.forEach(e => {
+                    const key = (e.time_tag || '').slice(0, 10);
+                    const kp = parseFloat(e.Kp);
+                    if (key && !isNaN(kp)) kpByDay[key] = Math.max(kpByDay[key] || 0, kp);
+                });
+            } catch (err) { console.warn('Timeline Kp fetch failed:', err); }
+
+            // Solar X-ray flux (long channel) - daily max
+            try {
+                const file = days <= 1 ? 'xrays-1-day.json' : days <= 3 ? 'xrays-3-day.json' : 'xrays-7-day.json';
+                const r = await fetch('https://services.swpc.noaa.gov/json/goes/primary/' + file);
+                const data = await r.json();
+                data.forEach(e => {
+                    if (e.energy && e.energy !== '0.1-0.8nm') return;
+                    const key = (e.time_tag || '').slice(0, 10);
+                    const flux = parseFloat(e.flux);
+                    if (key && !isNaN(flux)) fluxByDay[key] = Math.max(fluxByDay[key] || 0, flux);
+                });
+            } catch (err) { console.warn('Timeline solar fetch failed:', err); }
+
+            // Earthquakes (M4.5+ past 30 days) - daily max magnitude
+            try {
+                const r = await fetch('https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_month.geojson');
+                const data = await r.json();
+                (data.features || []).forEach(f => {
+                    const key = new Date(f.properties.time).toISOString().slice(0, 10);
+                    const mag = f.properties.mag;
+                    if (mag != null) quakeByDay[key] = Math.max(quakeByDay[key] || 0, mag);
+                });
+            } catch (err) { console.warn('Timeline quake fetch failed:', err); }
+
+            const kpRaw = dayKeys.map(k => (k in kpByDay) ? kpByDay[k] : null);
+            const fluxRaw = dayKeys.map(k => (k in fluxByDay) ? fluxByDay[k] : null);
+            const quakeRaw = dayKeys.map(k => (k in quakeByDay) ? quakeByDay[k] : null);
+
+            // Normalize each to a shared 0-10 "relative intensity" scale
+            const kpNorm = kpRaw.map(v => v == null ? null : Math.min(10, (v / 9) * 10));
+            const quakeNorm = quakeRaw.map(v => v == null ? null : Math.max(0, Math.min(10, (v - 4) * 2)));
+            const fluxNorm = fluxRaw.map(v => v == null ? null : Math.max(0, Math.min(10, (Math.log10(v) + 8) * 1.6)));
+
+            return { labels: dayLabels, kpNorm, quakeNorm, fluxNorm, kpRaw, quakeRaw, fluxRaw };
+        }
+
+        function createTimelineChart(data) {
+            const ctx = document.getElementById('timelineChart').getContext('2d');
+            if (timelineChart) timelineChart.destroy();
+
+            timelineChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.labels,
+                    datasets: [
+                        { label: 'Solar Flares', data: data.fluxNorm, borderColor: '#ff3366', backgroundColor: 'rgba(255,51,102,0.1)', tension: 0.3, fill: false, borderWidth: 3, pointRadius: 2, pointHoverRadius: 6, spanGaps: false },
+                        { label: 'Geomagnetic (Kp)', data: data.kpNorm, borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.1)', tension: 0.3, fill: false, borderWidth: 3, pointRadius: 2, pointHoverRadius: 6, spanGaps: false },
+                        { label: 'Earthquakes', data: data.quakeNorm, borderColor: '#fbbf24', backgroundColor: 'rgba(251,191,36,0.1)', tension: 0.3, fill: false, borderWidth: 3, pointRadius: 2, pointHoverRadius: 6, spanGaps: false }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'rgba(17,24,39,0.95)',
+                            borderColor: '#6366f1',
+                            borderWidth: 1,
+                            padding: 12,
+                            callbacks: {
+                                label: function(context) {
+                                    const i = context.dataIndex;
+                                    if (context.dataset.label === 'Solar Flares') {
+                                        const f = data.fluxRaw[i];
+                                        return f == null ? 'Solar: no data' : 'Solar flux: ' + fluxToClass(f) + ' class';
+                                    }
+                                    if (context.dataset.label === 'Geomagnetic (Kp)') {
+                                        const k = data.kpRaw[i];
+                                        return k == null ? 'Kp: no data' : 'Kp index: ' + k.toFixed(1);
+                                    }
+                                    if (context.dataset.label === 'Earthquakes') {
+                                        const m = data.quakeRaw[i];
+                                        return m == null ? 'Quakes: none M4.5+' : 'Largest quake: M' + m.toFixed(1);
+                                    }
+                                    return context.formattedValue;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true, max: 10,
+                            grid: { color: 'rgba(229,231,235,0.5)' },
+                            ticks: { color: '#6b7280', font: { size: 11 } },
+                            title: { display: true, text: 'Relative intensity (0-10, normalized)', color: '#6b7280', font: { size: 12 } }
+                        },
+                        x: {
+                            grid: { color: 'rgba(229,231,235,0.5)' },
+                            ticks: { color: '#6b7280', font: { size: 10 }, maxTicksLimit: currentDays > 7 ? 15 : 7 }
+                        }
+                    }
+                }
+            });
+        }
+
+        window.setTimeRange = function(days) {
+            currentDays = days;
+            document.querySelectorAll('[onclick^="setTimeRange"]').forEach(btn => {
+                btn.className = 'px-3 py-1 rounded-lg text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200';
+            });
+            event.target.className = 'px-3 py-1 rounded-lg text-sm bg-indigo-600 text-white border border-indigo-600';
+            refreshData();
+        };
+
+        window.refreshData = async function() {
+            document.getElementById('lastUpdate').textContent = 'Updating...';
+
+            await Promise.all([
+                fetchEarthquakes(),
+                fetchSolarFlareData(),
+                fetchKpIndex(),
+                fetchPlanetaryAspects()
+            ]);
+
+            displayVolcanoes();
+
+            const data = await buildTimelineData(currentDays);
+            createTimelineChart(data);
+
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+        };
+
+        // Initial load
+        window.addEventListener('load', refreshData);
+
+        // Auto-refresh
+        setInterval(fetchEarthquakes, 10 * 60 * 1000);   // earthquakes every 10 min
+        setInterval(fetchSolarFlareData, 60 * 1000);     // solar every 60 s
+        setInterval(fetchKpIndex, 60 * 1000);            // Kp every 60 s
+        setInterval(fetchPlanetaryAspects, 6 * 60 * 60 * 1000); // aspects every 6 h
+
+        // ---------- PATTERN OBSERVATIONS ----------
+        // NOTE: earthquake counts below are live; the correlation language has been
+        // softened to avoid stating unsourced percentages as fact. (Next cleanup item.)
+        function generatePatternObservations() {
+            const observations = {
+                cosmicTerrestrial: generateCosmicCorrelations(),
+                worldEvents: generateWorldEventCorrelations(),
+                recentHighlights: generateRecentHighlights()
+            };
+            displayPatternObservations(observations);
+        }
+
+        function generateCosmicCorrelations() {
+            const majorQuakes = earthquakeData.filter(eq => parseFloat(eq.mag) >= 6.0);
+            const avgMag = earthquakeData.length > 0
+                ? (earthquakeData.reduce((sum, eq) => sum + parseFloat(eq.mag), 0) / earthquakeData.length).toFixed(1)
+                : '5.0';
+            return [
+                `&bull; <strong>Current seismic activity:</strong> ${earthquakeData.length} earthquakes M4.5+ shown, with ${majorQuakes.length} events M6.0+. Average magnitude: ${avgMag}.`,
+                `&bull; <strong>Solar-Geomagnetic cascade:</strong> X-class flares are frequently followed by elevated Kp within 24-36 hours.`,
+                `&bull; <strong>Geomagnetic-Seismic pattern:</strong> A possible link between strong Kp storms and subsequent seismic activity is an area of ongoing study.`,
+                `&bull; <strong>Schumann-Seismic link:</strong> Researchers continue to investigate relationships between ELF activity and seismic events.`
+            ];
+        }
+
+        function generateWorldEventCorrelations() {
+            return [
+                `&bull; <strong>Markets:</strong> Some studies have explored links between geomagnetic activity and market volatility; results are mixed.`,
+                `&bull; <strong>Health:</strong> Research has examined associations between geomagnetic storms and cardiovascular events.`,
+                `&bull; <strong>Sleep:</strong> Some data suggest geomagnetic activity may affect sleep for sensitive individuals.`,
+                `&bull; <strong>Collective mood:</strong> Whether solar activity influences collective behavior remains an open, debated question.`
+            ];
+        }
+
+        function generateRecentHighlights() {
+            const highlights = [];
+            if (earthquakeData.length > 0) {
+                const latestQuake = earthquakeData[0];
+                if (parseFloat(latestQuake.mag) >= 6.0) {
+                    highlights.push(`&bull; <strong>Recent major event:</strong> M${latestQuake.mag} earthquake near ${latestQuake.location}.`);
+                }
+            }
+            highlights.push(`&bull; <strong>Monitoring:</strong> Live solar, geomagnetic, and seismic feeds active.`);
+            highlights.push(`&bull; <strong>Note:</strong> Pattern detection here is observational, not predictive.`);
+            return highlights;
+        }
+
+        function displayPatternObservations(observations) {
+            if (observations.cosmicTerrestrial) {
+                document.getElementById('cosmicCorrelations').innerHTML =
+                    observations.cosmicTerrestrial.map(obs => `<p>${obs}</p>`).join('');
+            }
+            if (observations.worldEvents) {
+                document.getElementById('worldCorrelations').innerHTML =
+                    observations.worldEvents.map(obs => `<p>${obs}</p>`).join('');
+            }
+            if (observations.recentHighlights) {
+                document.getElementById('recentHighlights').innerHTML =
+                    observations.recentHighlights.map(obs => `<p>${obs}</p>`).join('');
+            }
+        }
+    </script>
+</body>
+</html>
