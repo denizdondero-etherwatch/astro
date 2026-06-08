@@ -189,8 +189,8 @@
             <!-- Recent Earthquakes -->
             <div class="card rounded-2xl p-6 shadow-sm border-l-4 border-amber-500">
                 <div class="mb-4">
-                    <h2 class="text-lg font-bold text-gray-800 mb-1">&#127757; Recent Earthquakes (M4.5+)</h2>
-                    <p class="text-xs text-gray-600">Past 30 days - Live from USGS</p>
+                    <h2 class="text-lg font-bold text-gray-800 mb-1">&#127757; Largest Earthquakes (M4.5+)</h2>
+                    <p class="text-xs text-gray-600">Past 30 days, ranked by magnitude - Live from USGS</p>
                 </div>
                 <div id="earthquakeList" class="space-y-3 max-h-96 overflow-y-auto">
                     <p class="text-sm text-gray-500">Loading earthquake data...</p>
@@ -410,16 +410,20 @@
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const data = await response.json();
 
-                earthquakeData = data.features.slice(0, 15).map(feature => {
-                    const props = feature.properties;
-                    const date = new Date(props.time);
-                    return {
-                        date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-                        mag: props.mag ? props.mag.toFixed(1) : 'N/A',
-                        location: props.place || 'Unknown location',
-                        time: date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC'
-                    };
-                });
+                earthquakeData = data.features
+                    .slice()
+                    .sort((a, b) => (b.properties.mag || 0) - (a.properties.mag || 0))
+                    .slice(0, 20)
+                    .map(feature => {
+                        const props = feature.properties;
+                        const date = new Date(props.time);
+                        return {
+                            date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }),
+                            mag: props.mag ? props.mag.toFixed(1) : 'N/A',
+                            location: props.place || 'Unknown location',
+                            time: date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC'
+                        };
+                    });
 
                 displayEarthquakes();
                 generatePatternObservations();
